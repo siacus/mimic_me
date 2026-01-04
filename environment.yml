@@ -7,36 +7,36 @@ dependencies:
   # Python
   - python=3.11
   
-  # Core dependencies
-  - numpy>=1.24
+  # Core
+  - numpy
   - pip
   
-  # Audio processing
-  - librosa>=0.10
-  - python-soundfile>=0.12  # conda name is python-soundfile, not soundfile
-  - ffmpeg  # System ffmpeg for audio extraction
+  # Audio - use conda-forge names
+  - librosa
+  - pysoundfile  # This is the conda-forge name for soundfile
+  - ffmpeg
   
-  # Video/Image processing
-  - opencv>=4.8
+  # Video/Image
+  - opencv
   
-  # Web framework
-  - fastapi>=0.110
-  - uvicorn>=0.27
+  # Web
+  - fastapi
+  - uvicorn
   
   # Utilities
-  - python-dateutil>=2.9
-  - pydantic>=2.0
+  - python-dateutil
+  - pydantic
   
-  # PyTorch for Apple Silicon (MPS support)
-  - pytorch>=2.0
-  - torchaudio>=2.0
+  # PyTorch for Apple Silicon (MPS)
+  - pytorch
+  - torchaudio
   
-  # pip dependencies (not available in conda or need specific versions)
+  # Install these via pip (not in conda or need specific versions)
   - pip:
     - gradio>=4.0.0
     - edge-tts>=6.1.0
     - mediapipe>=0.10.0
-    # Optional: uncomment to enable
+    # Optional - uncomment to enable:
     # - openai
     # - elevenlabs
-    # - TTS  # Coqui XTTS
+    # - TTS
