@@ -355,9 +355,12 @@ class CandidateGenerator:
         
         reference_motion = None
         if reference_video_path:
+            # Cache extracted motion next to the uploaded video so it survives across sessions
+            cache_dir = os.path.join(self.storage.paths.uploads_dir, profile_id)
+            os.makedirs(cache_dir, exist_ok=True)
             reference_motion = self._extract_reference_motion(
                 reference_video_path,
-                self.storage.paths.episodes_dir,
+                cache_dir,
             )
         
         for i in range(n_candidates):

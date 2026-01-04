@@ -1,0 +1,8 @@
+/cache
+/core/__pycache__
+/data/episodes
+/data/profiles
+/data/uploads
+/learning/__pycache__
+/media/__pycache__
+/ml/__pycache__

@@ -42,17 +42,30 @@ def _session_id(request: gr.Request) -> str:
     return getattr(request, "session_hash", None) or "default"
 
 
-def list_profile_choices() -> List[str]:
+def list_profile_choices() -> List[tuple[str, str]]:
+    """Return dropdown choices as (label, value) so we keep the full UUID."""
     ps = profiles.list_profiles()
-    return [f"{p.name} [{p.profile_id[:8]}]" for p in ps]
+    return [(f"{p.name} [{p.profile_id[:8]}]", p.profile_id) for p in ps]
 
 
 def _profile_id_from_choice(choice: str) -> Optional[str]:
+    """Choice is the dropdown value (full profile_id). Fallback for older Gradio."""
     if not choice:
         return None
-    if "[" in choice and choice.endswith("]"):
-        return choice.split("[", 1)[1][:-1]
-    return None
+
+    # Preferred: value is the full UUID
+    if len(choice) >= 32 and "-" in choice:
+        return choice
+
+    # Fallback: label was returned, try to parse [xxxx] and resolve
+    if "[" in choice and "]" in choice:
+        token = choice.split("[", 1)[1].split("]", 1)[0].strip()
+        for p in profiles.list_profiles():
+            if p.profile_id.startswith(token):
+                return p.profile_id
+        return token
+
+    return choice
 
 
 def _coerce_path(x) -> Optional[str]:
@@ -187,6 +200,11 @@ def generate_candidates(
     text = (text or "").strip() or "(no text provided)"
     voice_mode = profiles.resolve_voice_mode(pid, voice_mode_requested)
 
+    # Load per-profile persisted settings (voice/motion references, last candidate set)
+    profile_json = storage.read_profile_json(pid) or {}
+    persisted_voice_ref = profile_json.get('voice_reference_audio_path')
+    persisted_video_ref = profile_json.get('motion_reference_video_path')
+
     a_path = _coerce_path(audio_in)
     v_path = _coerce_path(video_in)
     u_path = _coerce_path(upload_file)
@@ -194,6 +212,14 @@ def generate_candidates(
     reference_video_path: Optional[str] = None
     reference_audio_path: Optional[str] = None
     ingest_notes: List[str] = []
+
+    # If user asked for imitation but didn't provide a new reference, reuse last stored reference
+    if voice_mode == 'imitate' and not u_path and not a_path and not v_path and persisted_voice_ref and os.path.exists(persisted_voice_ref):
+        reference_audio_path = persisted_voice_ref
+        ingest_notes.append('Using stored voice reference for this profile.')
+    if not u_path and not v_path and persisted_video_ref and os.path.exists(persisted_video_ref):
+        reference_video_path = persisted_video_ref
+        ingest_notes.append('Using stored motion reference video for this profile.')
 
     # Priority: uploaded video/audio -> webcam video -> microphone audio
     if u_path:
@@ -225,7 +251,16 @@ def generate_candidates(
         ingest_notes.append(f"Microphone: {msg}")
 
     else:
-        ingest_notes.append("No usable video/audio provided. Candidates generated without reference.")
+        if not reference_audio_path and not reference_video_path:
+            ingest_notes.append("No usable video/audio provided. Candidates generated without reference.")
+
+    # Persist latest references so the app can resume after reload
+    if reference_audio_path:
+        profile_json['voice_reference_audio_path'] = reference_audio_path
+    if reference_video_path:
+        profile_json['motion_reference_video_path'] = reference_video_path
+    if reference_audio_path or reference_video_path:
+        storage.write_profile_json(pid, profile_json)
 
     takes = generator.generate_candidates(
         profile_id=pid,
@@ -254,6 +289,20 @@ def generate_candidates(
             )
         )
 
+    # Store last candidate set for resume-after-reload approval
+    try:
+        profile_json = storage.read_profile_json(pid) or {}
+        profile_json['last_candidate_set'] = {
+            'created_at': __import__('datetime').datetime.utcnow().isoformat(),
+            'episode_ids': [c.episode_id for c in sess.candidates],
+            'emotion': emotion,
+            'text': text,
+            'voice_mode': voice_mode,
+        }
+        storage.write_profile_json(pid, profile_json)
+    except Exception:
+        pass
+
     table = [
         {"idx": i, "episode_id": c.episode_id[:8], "emotion": c.emotion, "voice": c.voice_mode}
         for i, c in enumerate(sess.candidates)
@@ -271,9 +320,23 @@ def generate_candidates(
     return status, table, audio_preview, video_preview
 
 
-def approve_take(request: gr.Request, best_idx: int, antenna_role: str, notes: str) -> str:
+def approve_take(request: gr.Request, profile_choice: str, best_idx: int, antenna_role: str, notes: str) -> str:
     sid = _session_id(request)
     sess = app_state.get_session(sid)
+    pid = sess.current_profile_id or _profile_id_from_choice(profile_choice)
+    if not pid:
+        return "Select a profile first."
+    sess.current_profile_id = pid
+
+    # If page was reloaded, in-memory session candidates may be empty. Restore from profile.json.
+    if not sess.candidates:
+        pj = storage.read_profile_json(pid) or {}
+        last = pj.get('last_candidate_set') or {}
+        eids = last.get('episode_ids') or []
+        restored = []
+        for i, eid in enumerate(eids):
+            restored.append(CandidateTake(candidate_id=str(i), episode_id=eid, emotion=last.get('emotion',''), text=last.get('text',''), voice_mode=last.get('voice_mode',''), comedian=1.0))
+        sess.candidates = restored
     if not sess.candidates:
         return "No candidates to approve. Generate candidates first."
 
@@ -349,7 +412,6 @@ def run_simulation(profile_choice: str, script_text: str, voice_mode_requested: 
                 logger.exception("Failed to execute timeline")
 
     return f"Ran {len(outputs)} block(s) in {run_mode}.", (outputs[0] if outputs else None)
-
 
 def toggle_hardware(enable: bool) -> str:
     reachy.enable_hardware = bool(enable)
@@ -468,7 +530,7 @@ def build_ui():
                 notes = gr.Textbox(lines=2, label="Notes (optional)")
                 approve_btn = gr.Button("Approve best take")
                 approve_out = gr.Textbox(label="Approval result", interactive=False)
-                approve_btn.click(approve_take, inputs=[best_idx, antenna_role, notes], outputs=approve_out)
+                approve_btn.click(approve_take, inputs=[profile, best_idx, antenna_role, notes], outputs=approve_out)
 
                 gr.Markdown("### Incremental training")
                 update_btn = gr.Button("Update profile model")

@@ -44,7 +44,7 @@ edge-tts>=6.1.0
 # elevenlabs>=1.0.0
 
 # Coqui XTTS - local voice cloning (works great on M2!)
-# TTS>=0.22.0
+TTS>=0.22.0
 
 # PyTorch for Apple Silicon (MPS acceleration)
 # Install via: pip install torch torchaudio

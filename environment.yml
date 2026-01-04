@@ -39,4 +39,4 @@ dependencies:
     # Optional - uncomment to enable:
     # - openai
     # - elevenlabs
-    # - TTS
+    - TTS

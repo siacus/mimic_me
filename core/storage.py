@@ -143,15 +143,43 @@ class StorageManager:
         with self._conn() as conn:
             conn.execute(f"UPDATE profiles SET {sets} WHERE profile_id=?", vals)
 
+
+    def _resolve_profile_dir(self, profile_id: str) -> str:
+        """Return the on-disk directory for a profile id.
+
+        Normally this is <profiles_dir>/<full_uuid>. If a short prefix was provided
+        (e.g., first 8 chars), attempt to resolve it to a unique directory.
+        """
+        direct = os.path.join(self.paths.profiles_dir, profile_id)
+        if os.path.isdir(direct):
+            return direct
+
+        # prefix resolution
+        candidates = []
+        try:
+            for name in os.listdir(self.paths.profiles_dir):
+                p = os.path.join(self.paths.profiles_dir, name)
+                if os.path.isdir(p) and name.startswith(profile_id):
+                    candidates.append(p)
+        except FileNotFoundError:
+            pass
+
+        if len(candidates) == 1:
+            return candidates[0]
+
+        return direct
+
     def read_profile_json(self, profile_id: str) -> Dict[str, Any]:
-        path = os.path.join(self.paths.profiles_dir, profile_id, "profile.json")
+        profile_dir = self._resolve_profile_dir(profile_id)
+        path = os.path.join(profile_dir, "profile.json")
         if not os.path.exists(path):
             return {}
         with open(path, "r", encoding="utf-8") as f:
             return json.load(f)
 
     def write_profile_json(self, profile_id: str, data: Dict[str, Any]) -> None:
-        path = os.path.join(self.paths.profiles_dir, profile_id, "profile.json")
+        profile_dir = self._resolve_profile_dir(profile_id)
+        path = os.path.join(profile_dir, "profile.json")
         with open(path, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2)
 

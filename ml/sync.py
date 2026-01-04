@@ -84,6 +84,7 @@ class SyncLearner:
         self.storage_dir = storage_dir
         self.model = SyncModel()
         self._examples: List[SyncExample] = []
+        self._example_ids: set[str] = set()
         
         os.makedirs(storage_dir, exist_ok=True)
         self._load_model()
@@ -116,6 +117,9 @@ class SyncLearner:
             except Exception as e:
                 logger.warning(f"Failed to load examples: {e}")
     
+        # Index for deduplication
+        self._example_ids = set(ex.episode_id for ex in getattr(self, '_examples', []))
+
     def _save_model(self) -> None:
         """Save model to disk"""
         with open(self._model_path(), "w", encoding="utf-8") as f:
@@ -125,6 +129,12 @@ class SyncLearner:
             pickle.dump(self._examples, f)
         
         logger.info(f"Saved sync model v{self.model.version}")
+
+    def reset_examples(self) -> None:
+        """Clear in-memory examples (useful before rebuilding from DB)."""
+        self._examples = []
+        self._example_ids = set()
+
     
     def add_example(
         self,
@@ -136,6 +146,10 @@ class SyncLearner:
         approval_rank: int = 0,
     ) -> None:
         """Add a new training example"""
+        if episode_id in self._example_ids:
+            logger.debug(f"Sync example already present, skipping: {episode_id[:8]}")
+            return
+
         example = SyncExample(
             episode_id=episode_id,
             emotion=emotion,
@@ -145,6 +159,7 @@ class SyncLearner:
             approval_rank=approval_rank,
         )
         self._examples.append(example)
+        self._example_ids.add(episode_id)
         logger.info(f"Added sync example: {episode_id[:8]}, emotion={emotion}")
     
     def learn(self) -> Dict[str, Any]:

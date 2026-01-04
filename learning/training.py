@@ -243,6 +243,12 @@ class Trainer:
         # Load and process approved examples
         sync_learner = self._get_sync_learner()
         processed = 0
+        # Rebuild training set from DB each time to avoid duplicate examples
+        if sync_learner:
+            try:
+                sync_learner.reset_examples()
+            except Exception:
+                pass
         
         for episode in approved:
             data = self._load_episode_data(episode)
@@ -256,16 +262,8 @@ class Trainer:
                         k: np.array(v) if isinstance(v, list) else v
                         for k, v in data["audio_features"].items()
                     }
-                    
-                    # Get approval rank from episode
-                    approval_rank_json = episode.get("approval_rank")
+                    # Approved episodes should be treated as rank 0 (best).
                     approval_rank = 0
-                    if approval_rank_json:
-                        try:
-                            ranks = json.loads(approval_rank_json)
-                            approval_rank = ranks[0] if ranks else 0
-                        except:
-                            pass
                     
                     sync_learner.add_example(
                         episode_id=episode["episode_id"],
