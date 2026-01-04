@@ -2,13 +2,14 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import List, Dict, Optional
 import re
-
 from .profiles import normalize_custom_mood
+
 
 @dataclass
 class SayBlock:
     emotion: str
     text: str
+
 
 @dataclass
 class Script:
@@ -17,9 +18,11 @@ class Script:
     comedian: float = 1.0
     blocks: List[SayBlock] = None
 
+
 HEADER_RE = re.compile(r"^\s*(PROFILE|VOICE|COMEDIAN)\s*:\s*(.+?)\s*$", re.IGNORECASE)
 SAY_START_RE = re.compile(r"^\s*SAY\s*\((.*?)\)\s*:\s*$", re.IGNORECASE)
 QUOTE_RE = re.compile(r'^\s*"(.*)"\s*$')
+
 
 def _parse_args(arg_str: str) -> Dict[str, str]:
     args = {}
@@ -30,6 +33,7 @@ def _parse_args(arg_str: str) -> Dict[str, str]:
             args[k.strip().lower()] = v.strip()
     return args
 
+
 def _normalize_emotion_token(raw: str) -> str:
     raw = (raw or "").strip()
     if not raw:
@@ -39,17 +43,18 @@ def _normalize_emotion_token(raw: str) -> str:
         return f"Custom:{w}"
     return raw
 
+
 def parse_script(text: str) -> Script:
     lines = (text or "").splitlines()
     script = Script(profile=None, voice="auto", comedian=1.0, blocks=[])
-
     i = 0
+    
     while i < len(lines):
         line = lines[i].rstrip("\n")
         if not line.strip():
             i += 1
             continue
-
+        
         m = HEADER_RE.match(line)
         if m:
             key = m.group(1).lower()
@@ -65,7 +70,7 @@ def parse_script(text: str) -> Script:
                     script.comedian = 1.0
             i += 1
             continue
-
+        
         m = SAY_START_RE.match(line)
         if m:
             args = _parse_args(m.group(1))
@@ -80,8 +85,9 @@ def parse_script(text: str) -> Script:
             script.blocks.append(SayBlock(emotion=emotion, text=say_text))
             i = j + 1
             continue
-
+        
         script.blocks.append(SayBlock(emotion="Custom:neutral", text=line.strip()))
         i += 1
-
+    
     return script
+

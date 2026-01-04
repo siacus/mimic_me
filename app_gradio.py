@@ -107,7 +107,10 @@ def _store_and_extract_from_video(profile_id: str, video_path: str) -> Tuple[Opt
     ok, msg = try_extract_audio(stored_video, wav_out)
     if ok:
         return stored_video, wav_out, f"Stored video + extracted audio ({msg})"
-    return stored_video, None, f"Stored video; audio extraction failed ({msg})"
+    else:
+        # Audio extraction failed - this is OK if video has no audio track
+        logger.warning(f"Audio extraction failed for {stored_video}: {msg}")
+        return stored_video, None, f"Stored video; {msg}"
 
 
 def _store_audio(profile_id: str, audio_path: str) -> Tuple[Optional[str], str]:
@@ -192,34 +195,37 @@ def generate_candidates(
     reference_audio_path: Optional[str] = None
     ingest_notes: List[str] = []
 
-    # Priority: webcam video -> uploaded video -> audio-only fallback
-    if v_path and _looks_like_video(v_path):
+    # Priority: uploaded video/audio -> webcam video -> microphone audio
+    if u_path:
+        if _looks_like_video(u_path):
+            stored_v, extracted_wav, msg = _store_and_extract_from_video(pid, u_path)
+            reference_video_path = stored_v
+            reference_audio_path = extracted_wav
+            ingest_notes.append(f"Upload video: {msg}")
+        elif _looks_like_audio(u_path):
+            stored_a, msg = _store_audio(pid, u_path)
+            reference_audio_path = stored_a
+            ingest_notes.append(f"Upload audio: {msg}")
+        else:
+            ingest_notes.append("Upload: unknown file type")
+
+    elif v_path and _looks_like_video(v_path):
         stored_v, extracted_wav, msg = _store_and_extract_from_video(pid, v_path)
         reference_video_path = stored_v
         reference_audio_path = extracted_wav
         ingest_notes.append(f"Webcam: {msg}")
+        
+        # IMPORTANT: Warn user if webcam video has no audio
+        if not extracted_wav:
+            ingest_notes.append("⚠️  Webcam video has no audio - use Upload or Microphone instead")
 
-    elif u_path and _looks_like_video(u_path):
-        stored_v, extracted_wav, msg = _store_and_extract_from_video(pid, u_path)
-        reference_video_path = stored_v
-        reference_audio_path = extracted_wav
-        ingest_notes.append(f"Upload video: {msg}")
+    elif a_path and _looks_like_audio(a_path):
+        stored_a, msg = _store_audio(pid, a_path)
+        reference_audio_path = stored_a
+        ingest_notes.append(f"Microphone: {msg}")
 
     else:
-        audio_candidate = None
-        if u_path and _looks_like_audio(u_path):
-            audio_candidate = u_path
-            ingest_notes.append("Upload: audio-only provided.")
-        elif a_path and _looks_like_audio(a_path):
-            audio_candidate = a_path
-            ingest_notes.append("Microphone: audio-only provided.")
-
-        if audio_candidate:
-            stored_a, msg = _store_audio(pid, audio_candidate)
-            reference_audio_path = stored_a
-            ingest_notes.append(msg)
-        else:
-            ingest_notes.append("No usable video/audio provided. Candidates generated without a reference sample.")
+        ingest_notes.append("No usable video/audio provided. Candidates generated without reference.")
 
     takes = generator.generate_candidates(
         profile_id=pid,
@@ -356,7 +362,8 @@ def build_ui():
         gr.Markdown(
             "# Reachy Mimic (Mini Lite)\n"
             "Incremental, approval-based learning with profiles, moods, and synced voice+motion.\n\n"
-            "**Your voice reference is sourced from VIDEO** when available (webcam or uploaded)."
+            "**⚠️  IMPORTANT: Gradio webcam does NOT capture audio by default.**\n"
+            "**For voice learning, use Upload (phone video) or Microphone components.**"
         )
 
         with gr.Row():
@@ -368,8 +375,9 @@ def build_ui():
             with gr.Tab("Learning"):
                 gr.Markdown(
                     "## Learning\n"
-                    "Record or upload a short clip. The app extracts audio from the video (ffmpeg recommended).\n"
-                    "Then generate candidates, approve the best, and incrementally update the profile."
+                    "**RECOMMENDED: Upload phone video (with audio) for best results.**\n\n"
+                    "The app extracts audio from video using ffmpeg.\n"
+                    "Then generates candidates, you approve the best, and incrementally update the profile."
                 )
 
                 with gr.Accordion("Create profile", open=False):
@@ -388,30 +396,39 @@ def build_ui():
                     custom = gr.Textbox(label="Custom one-word mood (used only if Mood=Custom)")
                     voice_mode = gr.Dropdown(choices=VOICE_MODES, value="auto", label="Voice mode (auto enforces consent)")
 
-                text = gr.Textbox(lines=2, label="Text to say (optional)")
+                text = gr.Textbox(lines=2, label="Text to say")
 
                 with gr.Row():
                     n_candidates = gr.Slider(1, 4, value=2, step=1, label="# Candidates")
                     comedian = gr.Slider(0.0, 2.0, value=1.0, step=0.05, label="Comedian slider (exaggeration)")
                     source_type = gr.Dropdown(choices=["live", "upload"], value="live", label="Learning source type")
 
-                gr.Markdown("### Record live (recommended)")
+                gr.Markdown(
+                    "### 🎤 Audio Input (Recommended for Voice Learning)\n"
+                    "Use microphone to record just audio, or upload a phone video/audio file."
+                )
                 with gr.Row():
                     audio_in = gr.Audio(
                         sources=["microphone"],
                         type="filepath",
-                        label="(Optional) Mic audio fallback (use only if no video)",
+                        label="Microphone (audio only)",
                     )
-                    # IMPORTANT: DO NOT use type=... on gr.Video for older Gradio versions
-                    video_in = gr.Video(
-                        sources=["webcam"],
-                        label="Webcam video (drives voice learning)",
+                    upload = gr.File(
+                        file_types=[".mp4", ".mov", ".m4a", ".wav", ".mp3"],
+                        label="Upload phone video or audio (RECOMMENDED)"
                     )
 
-                gr.Markdown("### Upload phone video (recommended)")
-                upload = gr.File(file_types=[".mp4", ".mov", ".m4a", ".wav", ".mp3"], label="Upload file")
+                gr.Markdown(
+                    "### 📹 Webcam (Visual Only - NO AUDIO)\n"
+                    "⚠️  Gradio webcam component does NOT capture audio by default.\n"
+                    "Use this for visual reference only, not for voice learning."
+                )
+                video_in = gr.Video(
+                    sources=["webcam"],
+                    label="Webcam video (NO AUDIO - use Upload instead for voice)",
+                )
 
-                gen_btn = gr.Button("Generate candidates")
+                gen_btn = gr.Button("Generate candidates", variant="primary")
                 status = gr.Textbox(label="Status", interactive=False)
 
                 candidates_table = gr.Dataframe(
@@ -511,12 +528,16 @@ def build_ui():
                 run_btn.click(run_simulation, inputs=[profile2, script, voice2, comedian2, run_mode], outputs=[sim_status, sim_audio])
 
         gr.Markdown(
-            "Notes:\n"
-            "- Install ffmpeg for best video→audio extraction: `brew install ffmpeg`\n"
-            "- The ML is still stubbed, but reference video/audio is now stored and passed into the generator.\n"
+            "---\n"
+            "### 📝 Notes:\n"
+            "- **For voice learning**: Use Upload (phone video) or Microphone - webcam has NO audio\n"
+            "- Install ffmpeg for video→audio extraction: `brew install ffmpeg`\n"
+            "- The ML is still stubbed, but reference video/audio is now stored correctly\n"
+            "- Check terminal logs to see exactly what's happening\n"
         )
     return demo
 
 
 if __name__ == "__main__":
     build_ui().launch()
+    

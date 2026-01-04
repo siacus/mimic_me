@@ -7,6 +7,7 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+
 @dataclass
 class Pose:
     pitch: float = 0.0
@@ -16,10 +17,12 @@ class Pose:
     antenna_l: float = 0.0
     antenna_r: float = 0.0
 
+
 @dataclass
 class TimelinePoint:
     t: float
     pose: Pose
+
 
 class ReachyMiniDriver:
     """
@@ -33,11 +36,11 @@ class ReachyMiniDriver:
         "base": (0.0, 360.0),
         "antenna": (-30.0, 30.0),
     }
-
+    
     def __init__(self, enable_hardware: bool = False):
         self.enable_hardware = enable_hardware
         self._robot = None
-
+    
     def connect(self) -> None:
         if not self.enable_hardware:
             logger.info("Hardware disabled: preview-only mode.")
@@ -54,10 +57,10 @@ class ReachyMiniDriver:
             logger.exception("Failed to connect: %s", e)
             self._robot = None
             self.enable_hardware = False
-
+    
     def is_connected(self) -> bool:
         return self._robot is not None
-
+    
     def get_frame(self) -> Optional[np.ndarray]:
         if not self._robot:
             return None
@@ -65,20 +68,20 @@ class ReachyMiniDriver:
             return self._robot.camera.get_frame()
         except Exception:
             return None
-
+    
     @staticmethod
     def _clamp(v: float, lo: float, hi: float) -> float:
         return float(max(lo, min(hi, v)))
-
+    
     def clamp_pose(self, p: Pose) -> Pose:
         p.pitch = self._clamp(p.pitch, *self.LIMITS["pitch"])
-        p.roll  = self._clamp(p.roll,  *self.LIMITS["roll"])
-        p.yaw   = self._clamp(p.yaw,   *self.LIMITS["yaw"])
-        p.base  = float(p.base % 360.0)
+        p.roll = self._clamp(p.roll, *self.LIMITS["roll"])
+        p.yaw = self._clamp(p.yaw, *self.LIMITS["yaw"])
+        p.base = float(p.base % 360.0)
         p.antenna_l = self._clamp(p.antenna_l, *self.LIMITS["antenna"])
         p.antenna_r = self._clamp(p.antenna_r, *self.LIMITS["antenna"])
         return p
-
+    
     def apply_pose(self, p: Pose) -> None:
         p = self.clamp_pose(p)
         if not self._robot:
@@ -93,7 +96,7 @@ class ReachyMiniDriver:
         except Exception:
             pass
         # Antenna direct control may differ; stub for now.
-
+    
     def play_timeline(self, timeline: List[TimelinePoint], realtime: bool = True) -> None:
         if not timeline:
             return
@@ -103,7 +106,7 @@ class ReachyMiniDriver:
             if realtime:
                 while time.time() - t0 < pt.t:
                     time.sleep(0.002)
-
+    
     @staticmethod
     def exaggerate_timeline(timeline: List[TimelinePoint], comedian: float) -> List[TimelinePoint]:
         comedian = float(comedian)
@@ -123,3 +126,4 @@ class ReachyMiniDriver:
             )
             out.append(TimelinePoint(t=pt.t, pose=p2))
         return out
+    
