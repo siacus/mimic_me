@@ -13,7 +13,7 @@ dependencies:
   
   # Audio processing
   - librosa>=0.10
-  - soundfile>=0.12
+  - python-soundfile>=0.12  # conda name is python-soundfile, not soundfile
   - ffmpeg  # System ffmpeg for audio extraction
   
   # Video/Image processing
@@ -31,7 +31,7 @@ dependencies:
   - pytorch>=2.0
   - torchaudio>=2.0
   
-  # pip dependencies (not available in conda)
+  # pip dependencies (not available in conda or need specific versions)
   - pip:
     - gradio>=4.0.0
     - edge-tts>=6.1.0
