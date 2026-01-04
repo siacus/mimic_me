@@ -1,11 +1,56 @@
+# ==============================================
+# Mimic Me - Requirements for Apple Silicon (M1/M2/M3)
+# ==============================================
+#
+# RECOMMENDED: Use conda/mamba with environment.yml instead:
+#   mamba env create -f environment.yml
+#   mamba activate mimic_me
+#
+# Or use this file with pip:
+#   pip install -r requirements.txt
+# ==============================================
+
+# Core dependencies
 gradio>=4.0.0
 numpy>=1.24
-opencv-python>=4.8
 soundfile>=0.12
-librosa>=0.10
 pydantic>=2.0
+
+# Audio processing
+librosa>=0.10
+
+# Video/Image processing  
+opencv-python>=4.8
+mediapipe>=0.10.0
+
+# Web framework
 fastapi>=0.110
 uvicorn>=0.27
+
+# Utilities
 python-dateutil>=2.9
-reachy-mini
-torch
+
+# TTS - Edge TTS (FREE, no API key needed)
+edge-tts>=6.1.0
+
+# ==============================================
+# OPTIONAL: Uncomment to enable additional providers
+# ==============================================
+
+# OpenAI TTS (requires OPENAI_API_KEY env var)
+# openai>=1.0.0
+
+# ElevenLabs with voice cloning (requires ELEVENLABS_API_KEY)
+# elevenlabs>=1.0.0
+
+# Coqui XTTS - local voice cloning (works great on M2!)
+# TTS>=0.22.0
+
+# PyTorch for Apple Silicon (MPS acceleration)
+# Install via: pip install torch torchaudio
+# Or better: use conda/mamba which handles Metal properly
+
+# ==============================================
+# Hardware (only if you have Reachy Mini robot)
+# ==============================================
+# reachy-mini

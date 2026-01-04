@@ -1,0 +1,28 @@
+{
+  "tts": {
+    "provider": "edge",
+    "openai_model": "tts-1-hd",
+    "openai_voice": "alloy",
+    "elevenlabs_voice_id": "21m00Tcm4TlvDq8ikWAM",
+    "coqui_device": "auto",
+    "coqui_model": "tts_models/multilingual/multi-dataset/xtts_v2",
+    "edge_voice": "en-US-AriaNeural",
+    "cache_enabled": true
+  },
+  "motion": {
+    "device": "auto",
+    "use_gpu": true,
+    "target_fps": 30.0,
+    "min_detection_confidence": 0.5,
+    "min_tracking_confidence": 0.5
+  },
+  "learning": {
+    "sync_learning_enabled": true,
+    "preference_learning_enabled": true,
+    "auto_train_on_approve": true,
+    "min_examples_for_training": 3
+  },
+  "data_dir": "data",
+  "models_dir": "models",
+  "cache_dir": "cache"
+}

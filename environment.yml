@@ -1,0 +1,42 @@
+name: mimic_me
+channels:
+  - pytorch
+  - conda-forge
+  - defaults
+dependencies:
+  # Python
+  - python=3.11
+  
+  # Core dependencies
+  - numpy>=1.24
+  - pip
+  
+  # Audio processing
+  - librosa>=0.10
+  - soundfile>=0.12
+  - ffmpeg  # System ffmpeg for audio extraction
+  
+  # Video/Image processing
+  - opencv>=4.8
+  
+  # Web framework
+  - fastapi>=0.110
+  - uvicorn>=0.27
+  
+  # Utilities
+  - python-dateutil>=2.9
+  - pydantic>=2.0
+  
+  # PyTorch for Apple Silicon (MPS support)
+  - pytorch>=2.0
+  - torchaudio>=2.0
+  
+  # pip dependencies (not available in conda)
+  - pip:
+    - gradio>=4.0.0
+    - edge-tts>=6.1.0
+    - mediapipe>=0.10.0
+    # Optional: uncomment to enable
+    # - openai
+    # - elevenlabs
+    # - TTS  # Coqui XTTS
