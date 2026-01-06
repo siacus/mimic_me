@@ -1,42 +1,46 @@
 name: mimic_me
 channels:
-  - pytorch
   - conda-forge
   - defaults
+
 dependencies:
-  # Python
   - python=3.11
-  
-  # Core
-  - numpy
   - pip
-  
-  # Audio - use conda-forge names
+
+  # Numeric / scientific basics
+  - numpy
+
+  # Audio / video runtime deps
+  - ffmpeg<8
+  - torchcodec
   - librosa
-  - pysoundfile  # This is the conda-forge name for soundfile
-  - ffmpeg
-  
-  # Video/Image
+  - pysoundfile
   - opencv
-  
-  # Web
+
+  # Web server
   - fastapi
   - uvicorn
-  
+
   # Utilities
   - python-dateutil
   - pydantic
-  
-  # PyTorch for Apple Silicon (MPS)
-  - pytorch
-  - torchaudio
-  
-  # Install these via pip (not in conda or need specific versions)
+
+  # Keep the deep learning stack consistent via pip (avoid conda/pip torch mismatches).
+  # Pin versions that are known to work with Coqui XTTS and the current codebase.
   - pip:
-    - gradio>=4.0.0
-    - edge-tts>=6.1.0
-    - mediapipe>=0.10.0
-    # Optional - uncomment to enable:
-    # - openai
-    # - elevenlabs
-    - TTS
+      - gradio>=4.0.0
+      - lingua-language-detector>=2.0.0
+      - faster-whisper>=1.0.0
+      - edge-tts>=6.1.0
+
+      # MediaPipe: newer releases removed `mediapipe.solutions`; this app uses MediaPipe Tasks.
+      - mediapipe>=0.10.31
+
+      # Coqui XTTS voice cloning
+      - torch
+      - torchvision
+      - torchaudio
+      - TTS
+
+      # Transformers: Coqui XTTS code expects BeamSearchScorer to be importable; pin to a supported range.
+      - transformers==4.46.2

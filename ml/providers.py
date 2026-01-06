@@ -266,6 +266,7 @@ class EdgeTTSProvider(TTSProvider):
         output_path: str,
         voice_profile: Optional[VoiceProfile] = None,
         emotion: Optional[str] = None,
+        language: str = "en",
         voice: str = "en-US-AriaNeural",
         rate: str = "+0%",
         pitch: str = "+0Hz",
@@ -285,7 +286,18 @@ class EdgeTTSProvider(TTSProvider):
             import asyncio
         except ImportError:
             raise ImportError("edge-tts not installed. Run: pip install edge-tts")
-        
+        EDGE_VOICE_BY_LANG = {
+            "en": "en-US-AriaNeural",
+            "it": "it-IT-ElsaNeural",
+            "es": "es-ES-ElviraNeural",
+            "fr": "fr-FR-DeniseNeural",
+            "de": "de-DE-KatjaNeural",
+        }
+        # If caller didn't explicitly pick a voice, choose one by language.
+        # (Edge does not clone voices; this only changes the synthetic voice to match language.)
+        lang_code = (language or "en").lower()
+        if voice == "en-US-AriaNeural":
+            voice = EDGE_VOICE_BY_LANG.get(lang_code, "en-US-AriaNeural")
         # Map emotions to voice styles (Edge supports some styles)
         emotion_style_map = {
             "Happy": ("cheerful", "+10%", "+5Hz"),
@@ -363,18 +375,69 @@ class CoquiXTTSProvider(TTSProvider):
             try:
                 from TTS.api import TTS
                 import torch
+                import re
+                import importlib
                 
                 device = self._get_device()
+
+                def _allowlist_from_error(err: Exception) -> bool:
+                    """Allowlist globals required by torch.load(weights_only=True) for XTTS checkpoints.
+
+                    PyTorch 2.6+ defaults `torch.load(weights_only=True)` which can block loading objects
+                    inside trusted checkpoints unless they are allowlisted. Coqui TTS XTTS checkpoints
+                    can trigger errors like:
+                      "Unsupported global: GLOBAL TTS.tts.configs.xtts_config.XttsConfig"
+
+                    We only auto-allowlist objects explicitly referenced in the error message.
+                    """
+                    msg = str(err)
+                    if "Weights only load failed" not in msg or "Unsupported global: GLOBAL" not in msg:
+                        return False
+
+                    # Collect all "GLOBAL module.path.Class" occurrences
+                    globals_paths = re.findall(r"Unsupported global: GLOBAL ([A-Za-z0-9_\.]+)", msg)
+                    if not globals_paths:
+                        return False
+
+                    added_any = False
+                    for dotted in globals_paths:
+                        try:
+                            module_path, attr = dotted.rsplit(".", 1)
+                            mod = importlib.import_module(module_path)
+                            obj = getattr(mod, attr)
+                            torch.serialization.add_safe_globals([obj])
+                            logger.warning(
+                                "Allowlisted %s for torch.load(weights_only=True). "
+                                "Only do this if you trust the XTTS model source.",
+                                dotted,
+                            )
+                            added_any = True
+                        except Exception as e2:
+                            logger.warning("Failed to allowlist %s: %s", dotted, e2)
+                    return added_any
+
+                def _load_tts_on(dev: str):
+                    """Load XTTS with a small retry loop to add safe globals if required."""
+                    attempts = 0
+                    while True:
+                        try:
+                            logger.info(f"Loading Coqui XTTS on device: {dev}")
+                            return TTS(self.model_name).to(dev)
+                        except Exception as e:
+                            # Handle PyTorch weights_only safe-global errors (PyTorch 2.6+)
+                            if attempts < 5 and _allowlist_from_error(e):
+                                attempts += 1
+                                continue
+                            raise
                 
                 # Note: Some Coqui models have limited MPS support
                 # Fall back to CPU if MPS fails
                 try:
-                    logger.info(f"Loading Coqui XTTS on device: {device}")
-                    self._tts = TTS(self.model_name).to(device)
+                    self._tts = _load_tts_on(device)
                 except Exception as e:
                     if device == "mps":
                         logger.warning(f"MPS failed ({e}), falling back to CPU")
-                        self._tts = TTS(self.model_name).to("cpu")
+                        self._tts = _load_tts_on("cpu")
                     else:
                         raise
                 
@@ -382,7 +445,7 @@ class CoquiXTTSProvider(TTSProvider):
                 
             except ImportError:
                 raise ImportError(
-                    "TTS package not installed. Run: pip install TTS torch\n"
+                    "Coqui XTTS initialization failed (import error). This is usually a dependency/version mismatch (commonly `transformers`). Try pinning transformers (e.g., 4.46.2) and reinstalling TTS/torch in a clean env.\n"
                     "Note: First run will download ~2GB model."
                 )
         return self._tts
@@ -408,7 +471,15 @@ class CoquiXTTSProvider(TTSProvider):
         speaker_wav = None
         if voice_profile and voice_profile.reference_audio_paths:
             speaker_wav = voice_profile.reference_audio_paths[0]
-            logger.info(f"Coqui XTTS: cloning voice from {speaker_wav}")
+            if not os.path.exists(speaker_wav):
+                logger.warning(f"Coqui XTTS: requested cloning reference does not exist: {speaker_wav}")
+                speaker_wav = None
+            else:
+                logger.info(f"Coqui XTTS: cloning voice from {speaker_wav}")
+        if not speaker_wav:
+            logger.info("Coqui XTTS: no cloning reference provided, using default speaker")
+
+        logger.info(f"Coqui XTTS: language={language}")
         
         if speaker_wav:
             tts.tts_to_file(
@@ -573,6 +644,23 @@ class TTSManager:
         """Generate cache key for TTS output"""
         data = json.dumps({"text": text, "provider": provider, **kwargs}, sort_keys=True)
         return hashlib.sha256(data.encode()).hexdigest()[:16]
+
+    def _voice_signature(self, voice_profile: Optional[VoiceProfile]) -> Optional[str]:
+        """Create a stable-ish signature for the cloning reference.
+
+        We intentionally avoid hashing full file contents (slow).
+        Using (path, size, mtime) is enough to invalidate cache when the user uploads a new reference.
+        """
+        if not voice_profile or not voice_profile.reference_audio_paths:
+            return None
+        parts: List[str] = [voice_profile.profile_id]
+        for p in voice_profile.reference_audio_paths:
+            try:
+                st = os.stat(p)
+                parts.append(f"{p}|{st.st_size}|{int(st.st_mtime)}")
+            except Exception:
+                parts.append(str(p))
+        return hashlib.sha256("||".join(parts).encode()).hexdigest()[:16]
     
     def synthesize(
         self,
@@ -589,8 +677,16 @@ class TTSManager:
         provider = self.get_provider()
         
         # Check cache
+        voice_sig = self._voice_signature(voice_profile)
+
         if use_cache and self.cache_dir:
-            cache_key = self._get_cache_key(text, provider.name, emotion=emotion)
+            cache_key = self._get_cache_key(
+                text,
+                provider.name,
+                emotion=emotion,
+                voice_sig=voice_sig,
+                language=kwargs.get("language"),
+            )
             cache_path = os.path.join(self.cache_dir, f"{cache_key}.wav")
             
             if os.path.exists(cache_path):

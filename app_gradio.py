@@ -11,6 +11,26 @@ from core.logging_utils import setup_logging
 from core.storage import StorageManager
 from core.profiles import ProfileManager, normalize_emotion
 from core.constants import EMOTION_CHOICES_UI, ANTENNA_ROLES, VOICE_MODES
+
+# Language controls (for XTTS and language-specific Edge voices)
+LANG_CHOICES = [
+    ("Auto (detect)", "auto"),
+    ("Italiano (it)", "it"),
+    ("English (en)", "en"),
+    ("Español (es)", "es"),
+    ("Français (fr)", "fr"),
+    ("Deutsch (de)", "de"),
+]
+
+AUDIO_LANG_CHOICES = [
+    ("Auto (detect from reference audio)", "auto"),
+    ("Same as text", "same_as_text"),
+    ("Italiano (it)", "it"),
+    ("English (en)", "en"),
+    ("Español (es)", "es"),
+    ("Français (fr)", "fr"),
+    ("Deutsch (de)", "de"),
+]
 from core.state import AppState, CandidateTake
 from core.script_parser import parse_script
 from core.reachy_driver import ReachyMiniDriver
@@ -178,6 +198,8 @@ def generate_candidates(
     custom_mood: str,
     text: str,
     voice_mode_requested: str,
+    text_lang_choice: str,
+    audio_lang_choice: str,
     n_candidates: int,
     comedian: float,
     source_type: str,
@@ -272,6 +294,8 @@ def generate_candidates(
         source_type=source_type,
         reference_video_path=reference_video_path,
         reference_audio_path=reference_audio_path,
+        text_lang_choice=text_lang_choice,
+        audio_lang_choice=audio_lang_choice,
     )
 
     sess.current_profile_id = pid
@@ -354,6 +378,34 @@ def approve_take(request: gr.Request, profile_choice: str, best_idx: int, antenn
 
     ap = Approval(episode_id=chosen, ranking=ranking, antenna_role=antenna_role, notes=notes or "")
     approvals.approve(profile_id=sess.current_profile_id, episode_ids=episode_ids, approval=ap)
+
+    # Add approved example to learners, and optionally auto-train.
+    try:
+        from ml.config import get_config
+        cfg = get_config()
+        emotion = sess.candidates[best_idx].emotion if sess.candidates else ""
+        trainer.add_approved_example(
+            episode_id=chosen,
+            profile_id=sess.current_profile_id,
+            emotion=emotion,
+            ranking=ranking,
+            antenna_role=antenna_role,
+        )
+
+        # Auto-train once we have enough approved examples.
+        if getattr(cfg.learning, "auto_train_on_approve", True):
+            status = trainer.get_training_status(sess.current_profile_id)
+            need = int(getattr(cfg.learning, "min_examples_for_training", 3))
+            have = int(status.get("approved_episodes", 0))
+            if have >= need:
+                trainer.update_profile_models(profile_id=sess.current_profile_id)
+                return (
+                    f"Approved candidate {best_idx} (episode {chosen[:8]}), antenna={antenna_role}. "
+                    f"Auto-trained sync model (approved={have}, threshold={need})."
+                )
+    except Exception:
+        pass
+
     return f"Approved candidate {best_idx} (episode {chosen[:8]}), antenna={antenna_role}."
 
 
@@ -372,7 +424,7 @@ def mood_progress(profile_choice: str):
     return profiles.mood_progress_table(pid)
 
 
-def run_simulation(profile_choice: str, script_text: str, voice_mode_requested: str, comedian: float, run_mode: str):
+def run_simulation(profile_choice: str, script_text: str, voice_mode_requested: str, script_lang_choice: str, comedian: float, run_mode: str):
     pid = _profile_id_from_choice(profile_choice)
     if not pid:
         return "Select a profile.", None
@@ -395,6 +447,8 @@ def run_simulation(profile_choice: str, script_text: str, voice_mode_requested: 
             source_type="simulation",
             reference_video_path=None,
             reference_audio_path=None,
+            text_lang_choice=script_lang_choice,
+            audio_lang_choice="same_as_text",
         )
         t0 = takes[0]
         outputs.append(t0.preview_audio_path)
@@ -458,6 +512,10 @@ def build_ui():
                     custom = gr.Textbox(label="Custom one-word mood (used only if Mood=Custom)")
                     voice_mode = gr.Dropdown(choices=VOICE_MODES, value="auto", label="Voice mode (auto enforces consent)")
 
+                with gr.Row():
+                    text_lang = gr.Dropdown(choices=LANG_CHOICES, value="auto", label="Text language")
+                    audio_lang = gr.Dropdown(choices=AUDIO_LANG_CHOICES, value="auto", label="Audio language (reference)")
+
                 text = gr.Textbox(lines=2, label="Text to say")
 
                 with gr.Row():
@@ -514,6 +572,8 @@ def build_ui():
                         custom,
                         text,
                         voice_mode,
+                        text_lang,
+                        audio_lang,
                         n_candidates,
                         comedian,
                         source_type,
@@ -571,6 +631,7 @@ def build_ui():
                 refresh2.click(refresh_profiles_dropdown, None, profile2)
 
                 voice2 = gr.Dropdown(choices=VOICE_MODES, value="auto", label="Voice mode (auto enforces consent)")
+                script_lang = gr.Dropdown(choices=LANG_CHOICES, value="auto", label="Script language")
                 comedian2 = gr.Slider(0.0, 2.0, value=1.0, step=0.05, label="Comedian slider")
                 run_mode = gr.Radio(choices=["Preview only", "Perform on Reachy"], value="Preview only", label="Run mode")
 
@@ -587,7 +648,7 @@ def build_ui():
                 run_btn = gr.Button("Run")
                 sim_status = gr.Textbox(label="Status", interactive=False)
                 sim_audio = gr.Audio(type="filepath", label="Preview audio (first block)")
-                run_btn.click(run_simulation, inputs=[profile2, script, voice2, comedian2, run_mode], outputs=[sim_status, sim_audio])
+                run_btn.click(run_simulation, inputs=[profile2, script, voice2, script_lang, comedian2, run_mode], outputs=[sim_status, sim_audio])
 
         gr.Markdown(
             "---\n"

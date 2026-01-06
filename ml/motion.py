@@ -95,33 +95,124 @@ class MotionExtractor:
     to Reachy robot movements.
     """
     
-    def __init__(self, use_gpu: bool = False):
+    def __init__(
+        self,
+        use_gpu: bool = False,
+        face_landmarker_model_path: Optional[str] = None,
+        min_detection_confidence: float = 0.5,
+        min_tracking_confidence: float = 0.5,
+    ):
+        """
+        Args:
+            use_gpu: Kept for backward compatibility. (MediaPipe Tasks handles device selection internally.)
+            face_landmarker_model_path: Optional path to a MediaPipe Tasks face landmarker `.task` model.
+                If not provided, the extractor will look for:
+                  - env var MEDIAPIPE_FACE_LANDMARKER_MODEL
+                  - models/mediapipe/face_landmarker.task (relative to CWD)
+                  - <repo_root>/models/mediapipe/face_landmarker.task (relative to this file)
+            min_detection_confidence: Minimum confidence for face detection (best-effort mapping).
+            min_tracking_confidence: Minimum confidence for tracking (best-effort mapping).
+        """
         self.use_gpu = use_gpu
+        self.face_landmarker_model_path = face_landmarker_model_path
+        self.min_detection_confidence = float(min_detection_confidence)
+        self.min_tracking_confidence = float(min_tracking_confidence)
+
+        # Legacy Solutions backend
         self._face_mesh = None
         self._pose = None
+
+        # Tasks backend
+        self._tasks_backend = None  # None | "tasks" | "solutions"
+        self._face_landmarker_cls = None
+        self._face_landmarker_options = None
         
+    def _resolve_face_landmarker_model_path(self) -> Optional[str]:
+        """Find a usable `.task` model path for the MediaPipe Tasks FaceLandmarker."""
+        # 1) explicit arg
+        if self.face_landmarker_model_path:
+            return self.face_landmarker_model_path
+
+        # 2) env var
+        env_p = os.environ.get("MEDIAPIPE_FACE_LANDMARKER_MODEL")
+        if env_p:
+            return env_p
+
+        # 3) common repo-relative locations
+        candidates = [
+            os.path.join("models", "mediapipe", "face_landmarker.task"),
+            os.path.join(os.path.dirname(os.path.dirname(__file__)), "models", "mediapipe", "face_landmarker.task"),
+        ]
+        for p in candidates:
+            if os.path.exists(p):
+                return p
+        return candidates[0]  # return the default even if missing, for a useful error
+
     def _init_mediapipe(self):
-        """Lazy initialization of MediaPipe"""
-        if self._face_mesh is not None:
+        """Lazy initialization of MediaPipe.
+
+        Newer MediaPipe (>=0.10.31) removes `mediapipe.solutions` and requires MediaPipe Tasks.
+        We support both backends:
+          - Tasks FaceLandmarker (preferred)
+          - Legacy Solutions FaceMesh (if available)
+        """
+        if self._tasks_backend is not None:
             return
-            
+
         try:
             import mediapipe as mp
-            
-            self._mp = mp
+        except ImportError:
+            logger.error("MediaPipe not installed. Run: pip install mediapipe")
+            raise
+
+        self._mp = mp
+
+        # Prefer Tasks if available
+        if hasattr(mp, "tasks") and hasattr(mp.tasks, "vision"):
+            model_path = self._resolve_face_landmarker_model_path()
+            try:
+                BaseOptions = mp.tasks.BaseOptions
+                FaceLandmarker = mp.tasks.vision.FaceLandmarker
+                FaceLandmarkerOptions = mp.tasks.vision.FaceLandmarkerOptions
+                VisionRunningMode = mp.tasks.vision.RunningMode
+
+                # Note: options surface changes across releases; keep the required params minimal.
+                options = FaceLandmarkerOptions(
+                    base_options=BaseOptions(model_asset_path=model_path),
+                    running_mode=VisionRunningMode.VIDEO,
+                )
+
+                # Stash class/options; we create the landmarker per-video via context manager.
+                self._face_landmarker_cls = FaceLandmarker
+                self._face_landmarker_options = options
+                self._tasks_backend = "tasks"
+                logger.info("MediaPipe Tasks FaceLandmarker configured")
+                return
+            except Exception as e:
+                # If tasks exists but model path/options fail, fall back to solutions if available.
+                logger.warning(f"Failed to configure MediaPipe Tasks FaceLandmarker: {e}")
+
+        # Legacy Solutions (only if present)
+        if hasattr(mp, "solutions") and hasattr(mp.solutions, "face_mesh"):
             self._mp_face_mesh = mp.solutions.face_mesh
             self._face_mesh = self._mp_face_mesh.FaceMesh(
                 static_image_mode=False,
                 max_num_faces=1,
                 refine_landmarks=True,
-                min_detection_confidence=0.5,
-                min_tracking_confidence=0.5,
+                min_detection_confidence=self.min_detection_confidence,
+                min_tracking_confidence=self.min_tracking_confidence,
             )
-            logger.info("MediaPipe Face Mesh initialized")
-            
-        except ImportError:
-            logger.error("MediaPipe not installed. Run: pip install mediapipe")
-            raise
+            self._tasks_backend = "solutions"
+            logger.info("MediaPipe Solutions FaceMesh initialized")
+            return
+
+        # No usable backend
+        self._tasks_backend = "none"
+        logger.error(
+            "MediaPipe backend unavailable. Newer mediapipe wheels may not include `mediapipe.solutions`. "
+            "Install a recent mediapipe and provide a FaceLandmarker `.task` model at models/mediapipe/face_landmarker.task "
+            "or via MEDIAPIPE_FACE_LANDMARKER_MODEL."
+        )
     
     def _estimate_head_pose(
         self,
@@ -262,6 +353,10 @@ class MotionExtractor:
             return None
         
         self._init_mediapipe()
+
+        if getattr(self, "_tasks_backend", None) in ("none", None):
+            logger.error("MotionExtractor: no usable MediaPipe backend configured")
+            return None
         
         if not os.path.exists(video_path):
             logger.error(f"Video file not found: {video_path}")
@@ -284,50 +379,110 @@ class MotionExtractor:
         
         sequence = MotionSequence(duration=duration, fps=target_fps)
         
-        frame_idx = 0
-        while cap.isOpened():
-            ret, frame = cap.read()
-            if not ret:
-                break
-            
-            # Skip frames to match target fps
-            if frame_idx % frame_skip != 0:
+        def _append_neutral(t: float):
+            sequence.head_poses.append(HeadPose(t=t, pitch=0, yaw=0, roll=0))
+            sequence.facial_features.append(
+                FacialFeatures(t=t, mouth_open=0, eyebrow_raise=0.5, eye_openness=0.8, smile=0.3)
+            )
+
+        # --- Backend: MediaPipe Solutions (legacy) ---
+        if self._tasks_backend == "solutions":
+            frame_idx = 0
+            while cap.isOpened():
+                ret, frame = cap.read()
+                if not ret:
+                    break
+
+                if frame_idx % frame_skip != 0:
+                    frame_idx += 1
+                    continue
+
+                t = frame_idx / video_fps
+                rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                height, width = frame.shape[:2]
+
+                results = self._face_mesh.process(rgb_frame)
+                if results.multi_face_landmarks:
+                    landmarks = results.multi_face_landmarks[0]
+                    pitch, yaw, roll = self._estimate_head_pose(landmarks, width, height)
+                    sequence.head_poses.append(HeadPose(t=t, pitch=pitch, yaw=yaw, roll=roll))
+                    features = self._extract_facial_features(landmarks)
+                    sequence.facial_features.append(
+                        FacialFeatures(
+                            t=t,
+                            mouth_open=features["mouth_open"],
+                            eyebrow_raise=features["eyebrow_raise"],
+                            eye_openness=features["eye_openness"],
+                            smile=features["smile"],
+                        )
+                    )
+                else:
+                    _append_neutral(t)
+
                 frame_idx += 1
-                continue
-            
-            t = frame_idx / video_fps
-            
-            # Convert to RGB for MediaPipe
-            rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            height, width = frame.shape[:2]
-            
-            # Process with Face Mesh
-            results = self._face_mesh.process(rgb_frame)
-            
-            if results.multi_face_landmarks:
-                landmarks = results.multi_face_landmarks[0]
-                
-                # Extract head pose
-                pitch, yaw, roll = self._estimate_head_pose(landmarks, width, height)
-                sequence.head_poses.append(HeadPose(t=t, pitch=pitch, yaw=yaw, roll=roll))
-                
-                # Extract facial features
-                features = self._extract_facial_features(landmarks)
-                sequence.facial_features.append(FacialFeatures(
-                    t=t,
-                    mouth_open=features["mouth_open"],
-                    eyebrow_raise=features["eyebrow_raise"],
-                    eye_openness=features["eye_openness"],
-                    smile=features["smile"],
-                ))
-            else:
-                # No face detected - use neutral values
-                sequence.head_poses.append(HeadPose(t=t, pitch=0, yaw=0, roll=0))
-                sequence.facial_features.append(FacialFeatures(
-                    t=t, mouth_open=0, eyebrow_raise=0.5, eye_openness=0.8, smile=0.3
-                ))
-            
-            frame_idx += 1
+
+        # --- Backend: MediaPipe Tasks FaceLandmarker (preferred) ---
+        elif self._tasks_backend == "tasks":
+            model_path = self._resolve_face_landmarker_model_path()
+            if not os.path.exists(model_path):
+                cap.release()
+                logger.error(
+                    "FaceLandmarker model not found at %s. Download a FaceLandmarker `.task` model and place it there, "
+                    "or set MEDIAPIPE_FACE_LANDMARKER_MODEL.",
+                    model_path,
+                )
+                return None
+
+            # Build landmarker per video using context manager (recommended by MediaPipe docs).
+            with self._face_landmarker_cls.create_from_options(self._face_landmarker_options) as landmarker:
+                frame_idx = 0
+                while cap.isOpened():
+                    ret, frame = cap.read()
+                    if not ret:
+                        break
+
+                    if frame_idx % frame_skip != 0:
+                        frame_idx += 1
+                        continue
+
+                    t = frame_idx / video_fps
+                    rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                    height, width = frame.shape[:2]
+
+                    # MediaPipe Tasks expects an mp.Image
+                    mp_image = self._mp.Image(image_format=self._mp.ImageFormat.SRGB, data=rgb_frame)
+                    ts_ms = int(t * 1000)
+                    try:
+                        result = landmarker.detect_for_video(mp_image, ts_ms)
+                    except Exception as e:
+                        logger.debug(f"FaceLandmarker detect_for_video failed at t={t:.3f}s: {e}")
+                        _append_neutral(t)
+                        frame_idx += 1
+                        continue
+
+                    if getattr(result, "face_landmarks", None) and len(result.face_landmarks) > 0:
+                        # result.face_landmarks[0] is a list of NormalizedLandmark
+                        class _LMWrap:
+                            def __init__(self, lms):
+                                self.landmark = lms
+
+                        landmarks = _LMWrap(result.face_landmarks[0])
+                        pitch, yaw, roll = self._estimate_head_pose(landmarks, width, height)
+                        sequence.head_poses.append(HeadPose(t=t, pitch=pitch, yaw=yaw, roll=roll))
+                        features = self._extract_facial_features(landmarks)
+                        sequence.facial_features.append(
+                            FacialFeatures(
+                                t=t,
+                                mouth_open=features["mouth_open"],
+                                eyebrow_raise=features["eyebrow_raise"],
+                                eye_openness=features["eye_openness"],
+                                smile=features["smile"],
+                            )
+                        )
+                    else:
+                        _append_neutral(t)
+
+                    frame_idx += 1
         
         cap.release()
         

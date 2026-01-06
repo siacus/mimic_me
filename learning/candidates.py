@@ -14,6 +14,7 @@ import json
 import logging
 from dataclasses import dataclass
 from typing import List, Optional, Dict, Any
+from ml.lang import resolve_language
 import numpy as np
 import soundfile as sf
 
@@ -64,7 +65,25 @@ class CandidateGenerator:
                 cache_dir = config.tts.cache_dir if config.tts.cache_enabled else None
                 
                 self._tts_manager = TTSManager(cache_dir=cache_dir)
-                self._tts_manager.set_provider(config.tts.provider)
+
+                # Pass provider-specific configuration so local XTTS uses the intended model/device.
+                provider_kwargs = {}
+                if config.tts.provider == "coqui_xtts":
+                    provider_kwargs = {
+                        "device": getattr(config.tts, "coqui_device", "auto"),
+                        "model_name": getattr(config.tts, "coqui_model", "tts_models/multilingual/multi-dataset/xtts_v2"),
+                    }
+                elif config.tts.provider == "openai":
+                    provider_kwargs = {
+                        "api_key": getattr(config.tts, "openai_api_key", None),
+                        "model": getattr(config.tts, "openai_model", "tts-1-hd"),
+                    }
+                elif config.tts.provider == "elevenlabs":
+                    provider_kwargs = {
+                        "api_key": getattr(config.tts, "elevenlabs_api_key", None),
+                    }
+
+                self._tts_manager.set_provider(config.tts.provider, **provider_kwargs)
                 logger.info(f"Initialized TTS manager with provider: {config.tts.provider}")
                 
             except Exception as e:
@@ -158,6 +177,7 @@ class CandidateGenerator:
         voice_mode: str,
         emotion: str,
         profile_id: str,
+        language: str = "en",
         reference_audio_path: Optional[str] = None,
     ) -> Optional[str]:
         """Synthesize voice using configured TTS provider"""
@@ -165,7 +185,41 @@ class CandidateGenerator:
         tts = self._get_tts_manager()
         if tts is None:
             return self._make_placeholder_audio(output_path, text, emotion)
-        
+
+        # Ensure the active provider matches the requested voice mode.
+        # - voice_mode == 'imitate' must use a cloning-capable provider (Coqui XTTS)
+        # - otherwise use the configured default provider (often Edge TTS)
+        try:
+            from ml.config import get_config
+            config = get_config()
+
+            if voice_mode == "imitate":
+                tts.set_provider(
+                    "coqui_xtts",
+                    device=getattr(config.tts, "coqui_device", "auto"),
+                    model_name=getattr(config.tts, "coqui_model", "tts_models/multilingual/multi-dataset/xtts_v2"),
+                )
+            else:
+                # Restore configured provider for non-imitation modes
+                provider = getattr(config.tts, "provider", "edge")
+                provider_kwargs = {}
+                if provider == "coqui_xtts":
+                    provider_kwargs = {
+                        "device": getattr(config.tts, "coqui_device", "auto"),
+                        "model_name": getattr(config.tts, "coqui_model", "tts_models/multilingual/multi-dataset/xtts_v2"),
+                    }
+                elif provider == "openai":
+                    provider_kwargs = {
+                        "api_key": getattr(config.tts, "openai_api_key", None),
+                        "model": getattr(config.tts, "openai_model", "tts-1-hd"),
+                    }
+                elif provider == "elevenlabs":
+                    provider_kwargs = {"api_key": getattr(config.tts, "elevenlabs_api_key", None)}
+                tts.set_provider(provider, **provider_kwargs)
+        except Exception as _e:
+            # Don't fail generation because provider switching failed; synthesize() will handle fallbacks.
+            logger.warning(f"TTS provider selection warning: {_e}")
+
         try:
             voice_profile = None
             if voice_mode == "imitate" and reference_audio_path:
@@ -180,6 +234,11 @@ class CandidateGenerator:
                 output_path=output_path,
                 voice_profile=voice_profile,
                 emotion=emotion,
+                language=language,
+                # IMPORTANT: do not reuse cached audio when imitating a voice.
+                # Otherwise the first synthetic render of a text can be replayed forever,
+                # making it look like the user's reference audio is ignored.
+                use_cache=(voice_profile is None),
             )
             
             logger.info(f"Synthesized voice: {result.duration_seconds:.2f}s via {result.provider}")
@@ -338,6 +397,8 @@ class CandidateGenerator:
         source_type: str = "live",
         reference_video_path: Optional[str] = None,
         reference_audio_path: Optional[str] = None,
+        text_lang_choice: str = "auto",
+        audio_lang_choice: str = "auto",
         antenna_role: str = "Eyebrows",
     ) -> List[GeneratedTake]:
         """Generate candidate takes with voice + motion."""
@@ -352,6 +413,24 @@ class CandidateGenerator:
         
         n_candidates = max(1, min(int(n_candidates), 4))
         takes: List[GeneratedTake] = []
+        
+        # Resolve language for synthesis (used by XTTS/Edge).
+        
+        final_lang, text_lang_detected, audio_lang_detected = resolve_language(
+        
+            text=text,
+        
+            text_lang_choice=text_lang_choice,
+        
+            audio_lang_choice=audio_lang_choice,
+        
+            reference_wav=reference_audio_path,
+        
+        )
+        
+        logger.info(f"Resolved TTS language: {final_lang.lang} (source={final_lang.source}, conf={final_lang.confidence:.2f})")
+        
+        
         
         reference_motion = None
         if reference_video_path:
@@ -390,6 +469,11 @@ class CandidateGenerator:
                 "comedian": float(comedian),
                 "antenna_role": antenna_role,
                 "candidate_index": i,
+                "text_lang_choice": text_lang_choice,
+                "audio_lang_choice": audio_lang_choice,
+                "tts_language": getattr(final_lang, "lang", "en"),
+                "text_lang_detected": (text_lang_detected.as_dict() if text_lang_detected else None),
+                "audio_lang_detected": (audio_lang_detected.as_dict() if audio_lang_detected else None),
             }
             with open(os.path.join(assets_dir, "conditioning.json"), "w") as f:
                 json.dump(conditioning, f, indent=2)
@@ -400,6 +484,7 @@ class CandidateGenerator:
                 output_path=wav_path,
                 voice_mode=voice_mode,
                 emotion=emotion,
+                language=getattr(final_lang, "lang", "en"),
                 profile_id=profile_id,
                 reference_audio_path=reference_audio_path,
             )

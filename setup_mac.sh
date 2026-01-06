@@ -9,17 +9,11 @@ echo "  Mimic Me - Setup for Apple Silicon"
 echo "=============================================="
 
 # Detect package manager
-if command -v mamba &> /dev/null; then
-    PKG_MGR="mamba"
-    echo "✓ Using mamba"
-elif command -v micromamba &> /dev/null; then
-    PKG_MGR="micromamba"
-    echo "✓ Using micromamba"
-elif command -v conda &> /dev/null; then
+if command -v conda &> /dev/null; then
     PKG_MGR="conda"
     echo "✓ Using conda"
 else
-    echo "❌ No conda/mamba found. Please install one of:"
+    echo "❌ No conda found. Please install one of:"
     echo "   - Miniforge: https://github.com/conda-forge/miniforge"
     echo "   - Miniconda: https://docs.conda.io/en/latest/miniconda.html"
     exit 1
@@ -45,6 +39,18 @@ fi
 echo ""
 echo "Creating conda environment..."
 $PKG_MGR env create -f environment.yml -y
+
+echo ""
+echo "Activating $ENV_NAME environment..."
+$PKG_MGR activate $ENV_NAME
+
+echo ""
+echo "Downloading face_landmarker..."
+python scripts/download_face_landmarker.py
+
+echo ""
+echo "Dectivating $ENV_NAME environment..."
+$PKG_MGR deactivate
 
 echo ""
 echo "=============================================="

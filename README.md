@@ -243,6 +243,26 @@ python test_data_pipeline.py
 pip install mediapipe
 ```
 
+### "module 'mediapipe' has no attribute 'solutions'"
+Recent MediaPipe Python wheels have removed the legacy `mediapipe.solutions` API.
+This project supports the modern **MediaPipe Tasks** backend, but it requires a Face Landmarker
+model file (`.task`).
+
+1) Download a Face Landmarker `.task` model (see the official Face Landmarker Python guide).
+2) Place it at:
+
+```text
+models/mediapipe/face_landmarker.task
+```
+
+Or set an env var pointing to the model:
+
+```bash
+export MEDIAPIPE_FACE_LANDMARKER_MODEL=/absolute/path/to/face_landmarker.task
+```
+
+If the model is missing, the app will fall back to audio-derived motion.
+
 ### "ffmpeg not found"
 ```bash
 # With conda/mamba (recommended)
@@ -277,3 +297,10 @@ First run downloads ~2GB model. Subsequent runs use cached model.
 ## License
 
 MIT License
+
+
+## Language
+
+- In the UI you can set **Text language** and **Audio language**.
+- If set to **Auto**, the app will try to detect from the text (offline) and, when a reference audio is available, from the reference audio.
+- The resolved language code is passed to Coqui XTTS (voice cloning) and also selects an appropriate Edge voice when Edge is used.

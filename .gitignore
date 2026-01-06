@@ -6,3 +6,6 @@
 /learning/__pycache__
 /media/__pycache__
 /ml/__pycache__
+*.db
+/data
+/models/mediapipe
